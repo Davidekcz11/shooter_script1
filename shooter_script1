@@ -7,6 +7,7 @@
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local Lighting         = game:GetService("Lighting")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
@@ -248,6 +249,79 @@ local function ApplyAntiSpread()
         hrp.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
     end)
 end
+
+-- ============================================================
+-- NIGHT VISION (Town Night Support)
+-- ============================================================
+local NightVisionEnabled = false
+local OriginalLighting   = {}
+
+local NightVisionSettings = {
+    Brightness     = 3,
+    Ambient        = Color3.fromRGB(180, 180, 180),
+    OutdoorAmbient = Color3.fromRGB(180, 180, 180),
+    FogEnd         = 100000,
+    FogStart       = 100000,
+    ClockTime      = 14,
+}
+
+local function SaveLighting()
+    OriginalLighting.Brightness     = Lighting.Brightness
+    OriginalLighting.Ambient        = Lighting.Ambient
+    OriginalLighting.OutdoorAmbient = Lighting.OutdoorAmbient
+    OriginalLighting.FogEnd         = Lighting.FogEnd
+    OriginalLighting.FogStart       = Lighting.FogStart
+    OriginalLighting.ClockTime      = Lighting.ClockTime
+end
+
+local function ApplyNightVision()
+    SaveLighting()
+    Lighting.Brightness     = NightVisionSettings.Brightness
+    Lighting.Ambient        = NightVisionSettings.Ambient
+    Lighting.OutdoorAmbient = NightVisionSettings.OutdoorAmbient
+    Lighting.FogEnd         = NightVisionSettings.FogEnd
+    Lighting.FogStart       = NightVisionSettings.FogStart
+    Lighting.ClockTime      = NightVisionSettings.ClockTime
+
+    -- Disable post-processing effects that darken the scene
+    for _, effect in ipairs(Lighting:GetChildren()) do
+        if effect:IsA("BlurEffect")
+        or effect:IsA("ColorCorrectionEffect")
+        or effect:IsA("DepthOfFieldEffect")
+        or effect:IsA("SunRaysEffect") then
+            effect.Enabled = false
+        end
+    end
+end
+
+local function RemoveNightVision()
+    if not next(OriginalLighting) then return end
+    Lighting.Brightness     = OriginalLighting.Brightness
+    Lighting.Ambient        = OriginalLighting.Ambient
+    Lighting.OutdoorAmbient = OriginalLighting.OutdoorAmbient
+    Lighting.FogEnd         = OriginalLighting.FogEnd
+    Lighting.FogStart       = OriginalLighting.FogStart
+    Lighting.ClockTime      = OriginalLighting.ClockTime
+
+    -- Re-enable post-processing effects
+    for _, effect in ipairs(Lighting:GetChildren()) do
+        if effect:IsA("BlurEffect")
+        or effect:IsA("ColorCorrectionEffect")
+        or effect:IsA("DepthOfFieldEffect")
+        or effect:IsA("SunRaysEffect") then
+            effect.Enabled = true
+        end
+    end
+end
+
+-- Hook clock changes so night vision stays on if game forces night
+local NVClockConn = Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+    if not NightVisionEnabled then return end
+    if Lighting.ClockTime < 6 or Lighting.ClockTime > 20 then
+        Lighting.ClockTime = NightVisionSettings.ClockTime
+    end
+end)
+table.insert(Connections, NVClockConn)
 
 -- ============================================================
 -- FOV Circle
@@ -549,6 +623,7 @@ local function TerminateScript()
     Terminated     = true
     Config.Enabled = false
     ClearLock()
+    RemoveNightVision()
 
     for _, conn in ipairs(Connections) do
         pcall(function() conn:Disconnect() end)
@@ -683,7 +758,6 @@ RunService:BindToRenderStep(
             local hrpAlive = char and char:FindFirstChild("HumanoidRootPart")
             local humAlive = char and char:FindFirstChildOfClass("Humanoid")
 
-            -- DEATH GUARD — clear everything, stop all snapping
             local isDead = not hrpAlive or not humAlive
                 or humAlive.Health <= 0
                 or humAlive:GetState() == Enum.HumanoidStateType.Dead
@@ -693,7 +767,6 @@ RunService:BindToRenderStep(
                 return
             end
 
-            -- Re-check best visible part every frame
             local betterPart = GetBestPart(LockedTarget)
             if betterPart then
                 LockedPart = betterPart
@@ -704,7 +777,6 @@ RunService:BindToRenderStep(
             local ok, pos = pcall(function() return LockedPart.Position end)
             if not ok then return end
 
-            -- RAGDOLL GUARD — part fell below HRP
             if LastGoodPos and pos.Y < hrpAlive.Position.Y - 3 then
                 ClearLock()
                 return
@@ -727,7 +799,6 @@ RunService:BindToRenderStep(
             return
         end
 
-        -- Semi auto fallback
         if not IsShooting then return end
 
         if SnapFrameCount > 0 then
@@ -975,9 +1046,33 @@ task.spawn(function()
         Callback = function(val) AntiSpread = val end,
     })
 
+    -- NIGHT VISION TOGGLES
+    EffectsTab:CreateToggle({
+        Name = "Night Vision (Town)", CurrentValue = false, Flag = "CB_NightVision",
+        Callback = function(val)
+            NightVisionEnabled = val
+            if val then
+                ApplyNightVision()
+            else
+                RemoveNightVision()
+            end
+        end,
+    })
+
+    EffectsTab:CreateSlider({
+        Name = "NV Brightness", Range = {1, 10}, Increment = 1,
+        Suffix = "x", CurrentValue = 3, Flag = "CB_NVBrightness",
+        Callback = function(val)
+            NightVisionSettings.Brightness = val
+            if NightVisionEnabled then
+                Lighting.Brightness = val
+            end
+        end,
+    })
+
     EffectsTab:CreateParagraph({
         Title   = "Effects Info",
-        Content = "Anti Recoil = re-locks camera every frame. Anti Spread = zeroes horizontal velocity. Both ON = full auto works perfectly.",
+        Content = "Anti Recoil = re-locks camera every frame. Anti Spread = zeroes horizontal velocity. Night Vision = forces daytime lighting in Town. Both ON = full auto works perfectly.",
     })
 
     -- SCRIPT TAB
@@ -1010,4 +1105,4 @@ task.spawn(function()
     })
 end)
 
-print("[SilentAim] Loaded — CB / Town / Rivals / Arsenal | Full Auto | Smart Part Target | Wall Snap | Anti Recoil | Anti Spread | RAC safe")
+print("[SilentAim] Loaded — CB / Town / Rivals / Arsenal | Full Auto | Smart Part Target | Wall Snap | Anti Recoil | Anti Spread | Night Vision | RAC safe")
